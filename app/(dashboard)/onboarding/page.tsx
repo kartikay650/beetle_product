@@ -55,6 +55,18 @@ export default function OnboardingPage() {
       }
       setUserId(user.id)
 
+      // If onboarding already complete, bounce to dashboard
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('onboarding_complete')
+        .eq('id', user.id)
+        .maybeSingle()
+
+      if (profile?.onboarding_complete) {
+        router.push('/dashboard')
+        return
+      }
+
       // Check localStorage first
       const saved = localStorage.getItem(STORAGE_KEY)
       if (saved) {
@@ -74,8 +86,7 @@ export default function OnboardingPage() {
         .from('workspaces')
         .select('*')
         .eq('user_id', user.id)
-        .limit(1)
-        .single()
+        .maybeSingle()
 
       if (workspace && workspace.product_name) {
         setData((prev) => ({
