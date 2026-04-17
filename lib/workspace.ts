@@ -1,0 +1,2 @@
+// Workspace utilities — placeholder
+export {}
