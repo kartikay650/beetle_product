@@ -25,7 +25,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Job not found' }, { status: 404 })
   }
 
-  if (job.status !== 'queued') {
+  if (job.status !== 'pending') {
     return NextResponse.json({ error: `Job already ${job.status}` }, { status: 409 })
   }
 
@@ -43,7 +43,7 @@ export async function POST(request: Request) {
     await adminClient
       .from('crawl_jobs')
       .update({
-        status: 'completed',
+        status: 'complete',
         completed_at: new Date().toISOString(),
         threads_found: threadsFound,
       })
@@ -60,7 +60,7 @@ export async function POST(request: Request) {
     await adminClient
       .from('crawl_jobs')
       .update({
-        status: 'failed',
+        status: 'error',
         completed_at: new Date().toISOString(),
         error: message,
       })

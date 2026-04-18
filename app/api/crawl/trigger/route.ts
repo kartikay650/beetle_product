@@ -26,7 +26,7 @@ export async function POST(request: Request) {
     .from('crawl_jobs')
     .insert({
       workspace_id: workspace.id,
-      status: 'queued',
+      status: 'pending',
     })
     .select('id, status')
     .single()
