@@ -10,15 +10,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
-  const { job_id } = (await request.json().catch(() => ({}))) as { job_id?: string }
-  if (!job_id) {
-    return NextResponse.json({ error: 'job_id required' }, { status: 400 })
+  const { jobId } = (await request.json().catch(() => ({}))) as { jobId?: string }
+  if (!jobId) {
+    return NextResponse.json({ error: 'jobId required' }, { status: 400 })
   }
 
   const { data: job, error: jobError } = await adminClient
     .from('crawl_jobs')
     .select('id, workspace_id, status')
-    .eq('id', job_id)
+    .eq('id', jobId)
     .maybeSingle()
 
   if (jobError || !job) {

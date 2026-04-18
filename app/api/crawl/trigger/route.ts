@@ -28,7 +28,7 @@ export async function POST(request: Request) {
       workspace_id: workspace.id,
       status: 'pending',
     })
-    .select('id, status')
+    .select('id, status, apify_run_id')
     .single()
 
   if (error) {
@@ -44,10 +44,10 @@ export async function POST(request: Request) {
       'content-type': 'application/json',
       'x-internal-token': process.env.CRAWLER_INTERNAL_TOKEN || '',
     },
-    body: JSON.stringify({ job_id: job.id }),
+    body: JSON.stringify({ jobId: job.id }),
   }).catch(() => {
     // Processor will be retried on next trigger; nothing to do here.
   })
 
-  return NextResponse.json({ job_id: job.id, status: job.status })
+  return NextResponse.json({ jobId: job.id, apifyRunId: job.apify_run_id ?? null })
 }
