@@ -18,8 +18,7 @@ export async function getWorkspace(userId: string): Promise<WorkspaceData | null
     .from('workspaces')
     .select('*')
     .eq('user_id', userId)
-    .limit(1)
-    .single()
+    .maybeSingle()
 
   if (error || !data) return null
 
@@ -29,10 +28,12 @@ export async function getWorkspace(userId: string): Promise<WorkspaceData | null
 export async function upsertWorkspace(
   userId: string,
   data: Partial<WorkspaceData>
-): Promise<void> {
+): Promise<{ error: string | null }> {
   const supabase = await createClient()
 
-  await supabase
+  const { error } = await supabase
     .from('workspaces')
     .upsert({ user_id: userId, ...data }, { onConflict: 'user_id' })
+
+  return { error: error?.message ?? null }
 }

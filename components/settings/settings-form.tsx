@@ -6,6 +6,7 @@ import TagInput from '@/components/ui/tag-input'
 import { toast } from '@/components/ui/use-toast'
 import { track } from '@/lib/analytics'
 import { createClient } from '@/lib/supabase/client'
+import { saveWorkspace } from '@/app/(dashboard)/settings/actions'
 
 interface WorkspaceData {
   product_name: string
@@ -50,16 +51,13 @@ export default function SettingsForm({ userId, userEmail, initialWorkspace }: Se
 
   async function handleSave() {
     setSaving(true)
-    const { error } = await supabase
-      .from('workspaces')
-      .upsert({ user_id: userId, ...data }, { onConflict: 'user_id' })
-
+    const result = await saveWorkspace(userId, data)
     setSaving(false)
 
-    if (error) {
+    if (!result.success) {
       toast({
         title: 'Error',
-        description: error.message,
+        description: result.error ?? 'Could not save workspace',
         variant: 'destructive',
       })
       return
@@ -70,6 +68,7 @@ export default function SettingsForm({ userId, userEmail, initialWorkspace }: Se
       description: 'Workspace settings updated.',
     })
     track('settings_updated')
+    router.refresh()
   }
 
   async function handleUpdateEmail() {
