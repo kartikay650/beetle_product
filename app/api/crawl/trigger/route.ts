@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { adminClient } from '@/lib/supabase/admin'
+import { runApifyCrawl } from '@/lib/crawler'
 
-export async function POST(request: Request) {
+export async function POST() {
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
@@ -10,10 +11,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  // Find workspace for this user
+  // Load workspace with the fields needed for the crawl
   const { data: workspace } = await supabase
     .from('workspaces')
-    .select('id, user_id')
+    .select('id, keywords, subreddits')
     .eq('user_id', user.id)
     .maybeSingle()
 
@@ -21,33 +22,56 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
   }
 
-  // Create a crawl job row (uses admin client to bypass RLS on job table)
-  const { data: job, error } = await adminClient
+  // Create pending job row via admin client (bypasses RLS on jobs table)
+  const { data: job, error: insertError } = await adminClient
     .from('crawl_jobs')
     .insert({
       workspace_id: workspace.id,
       status: 'pending',
     })
-    .select('id, status, apify_run_id')
+    .select('id')
     .single()
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  if (insertError || !job) {
+    console.error('Failed to insert crawl_jobs row:', insertError)
+    return NextResponse.json(
+      { error: 'Could not create crawl job', details: insertError?.message },
+      { status: 500 }
+    )
   }
 
-  // Fire the processor in the background. We intentionally don't await
-  // this — the crawler can run long and the client polls /status.
-  const origin = new URL(request.url).origin
-  fetch(`${origin}/api/crawl/process`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-internal-token': process.env.CRAWLER_INTERNAL_TOKEN || '',
-    },
-    body: JSON.stringify({ jobId: job.id }),
-  }).catch(() => {
-    // Processor will be retried on next trigger; nothing to do here.
-  })
+  const jobId = job.id
 
-  return NextResponse.json({ jobId: job.id, apifyRunId: job.apify_run_id ?? null })
+  try {
+    const apifyRunId = await runApifyCrawl(
+      workspace.keywords ?? [],
+      workspace.subreddits ?? []
+    )
+
+    await adminClient
+      .from('crawl_jobs')
+      .update({
+        status: 'running',
+        apify_run_id: apifyRunId,
+        started_at: new Date().toISOString(),
+      })
+      .eq('id', jobId)
+
+    return NextResponse.json({ jobId, apifyRunId })
+  } catch (error) {
+    console.error('Apify call failed:', error)
+
+    await adminClient
+      .from('crawl_jobs')
+      .update({
+        status: 'error',
+        error_message: error instanceof Error ? error.message : String(error),
+      })
+      .eq('id', jobId)
+
+    return NextResponse.json(
+      { error: 'Failed to start crawl', details: String(error) },
+      { status: 500 }
+    )
+  }
 }
