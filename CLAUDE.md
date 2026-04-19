@@ -155,12 +155,20 @@ Three routes exist:
 
 ---
 
-## Current Session — 2026-04-19
+## Last Session — 2026-04-20
 
-**Task:** Fix silent Apify failure — `crawl_jobs` row stays at `status='pending'` with `apify_run_id=null` and no `error_message` after trigger.
+**Completed:** Crawler silent-failure fix.
 
-**Root cause hypothesis:** wrong actor ID + input schema mismatch. Previous `runApifyCrawl` used `trudax~reddit-scraper-lite` with a `{ startUrls, maxItems, searches }` input — but the correct actor is `harshmaur/reddit-scraper` with `{ searchTerms, searchPosts, withinCommunity, searchSort, searchTime, maxResults }`.
+Changes shipped (commit `3a65ca7`):
+- `lib/crawler.ts` rewritten with correct actor `harshmaur~reddit-scraper` and its input schema (`searchTerms`, `searchPosts`, `withinCommunity`, `searchSort='relevance'`, `searchTime='week'`, `maxResults=25`). Added helpers: `checkApifyRun`, `fetchApifyResults`, `mapApifyToThread`, `storeThreads`. Console.log diagnostics on every step (token presence + prefix, keywords, subreddits, full input, endpoint, response status, run id).
+- `app/api/crawl/trigger/route.ts`: every `adminClient.update()` now destructures `{ error }` and logs — the root cause of the silent failure was that Supabase updates don't throw, so a schema mismatch stayed invisible. Trigger now writes `error_message` + `completed_at` on failure, `apify_run_id` + `started_at` on success.
+- `app/api/crawl/process/route.ts`: wired to new crawler helpers. Polls Apify every 3s up to 55s, then fetches dataset items, `storeThreads` upserts into `threads`, completes the job + stamps `workspaces.last_synced_at`.
+- `.env.local`: renamed `CRAWLER_INTERNAL_TOKEN` → `CRAWL_SECRET=beetle-crawl-internal`.
 
-Additionally `crawl_jobs.update()` calls didn't destructure error → schema mismatches on columns like `started_at` / `error_message` would fail silently.
+**Verify on next run:**
+1. `POST /api/crawl/trigger` → response `{ jobId, apifyRunId: "<real id>" }` (not null)
+2. `crawl_jobs` row: `status='running'` then `'processing'` then `'complete'`, `threads_found > 0`
+3. `threads` table gets up to 25 new rows per crawl
+4. `workspaces.last_synced_at` updates
 
-**Fix in progress:** rewrite `lib/crawler.ts` to use harshmaur input schema, add `checkApifyRun` / `fetchApifyResults` / `mapApifyToThread` / `storeThreads`; make every `adminClient.update()` check its error and log it; wire `/api/crawl/process` to poll Apify and store threads.
+**Next task:** wire the "Find my first Reddit threads →" button on the dashboard `FirstTimeEmptyState` to call `POST /api/crawl/trigger` then poll `/api/crawl/status` every 3s until `status==='complete'`, then trigger `router.refresh()` so the thread list renders. Replace the current placeholder thread list with the one-thread-at-a-time UI (Phase 2 continuation).
