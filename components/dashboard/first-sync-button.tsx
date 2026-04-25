@@ -52,10 +52,12 @@ export default function FirstSyncButton() {
         const res = await fetch(`/api/crawl/status?jobId=${jobId}`)
         const data = await res.json()
 
-        if (data.status === 'complete') {
+        // Treat 'scoring' as ready-to-show: threads are stored, scoring runs in
+        // background, BEETLE'S READ polls for its own update once mounted.
+        if (data.status === 'complete' || data.status === 'scoring') {
           clearTimers()
           setLoading(false)
-          track('crawl_completed')
+          track('crawl_completed', { final_status: data.status })
           router.refresh()
           return
         }
