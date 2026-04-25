@@ -1,8 +1,6 @@
-'use client'
-
 import { Search, MessageSquare, TrendingUp } from 'lucide-react'
-import { toast } from '@/components/ui/use-toast'
-import { track } from '@/lib/analytics'
+import FirstSyncButton from '@/components/dashboard/first-sync-button'
+import SyncNowButton from '@/components/dashboard/sync-now-button'
 
 function relativeTime(iso: string | null | undefined): string {
   if (!iso) return 'Never synced'
@@ -19,14 +17,6 @@ function relativeTime(iso: string | null | undefined): string {
 }
 
 export function CaughtUpState({ lastSyncedAt }: { lastSyncedAt: string | null }) {
-  function handleSync() {
-    toast({
-      title: 'Coming soon',
-      description: "Reddit crawler coming soon. You'll get an email when it's ready.",
-    })
-    track('sync_attempted_caught_up')
-  }
-
   return (
     <div className="min-h-[60vh] flex flex-col items-center justify-center text-center">
       <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
@@ -36,25 +26,14 @@ export function CaughtUpState({ lastSyncedAt }: { lastSyncedAt: string | null })
       <h2 className="font-display font-bold text-xl text-beetle-ink mt-4">You&apos;re caught up</h2>
       <p className="text-sm text-beetle-muted font-body mt-2">No new threads right now.</p>
       <p className="text-xs text-beetle-faint mt-1">Last synced {relativeTime(lastSyncedAt)}</p>
-      <button
-        onClick={handleSync}
-        className="mt-6 border border-beetle-orange text-beetle-orange px-5 py-2 rounded-lg text-sm font-body hover:bg-beetle-orange hover:text-white transition-colors"
-      >
-        Sync now
-      </button>
+      <div className="mt-6">
+        <SyncNowButton />
+      </div>
     </div>
   )
 }
 
 export function FirstTimeEmptyState() {
-  function handleFirstSync() {
-    toast({
-      title: 'Coming soon',
-      description: "Reddit crawler coming in the next update. You'll get an email when it's ready.",
-    })
-    track('first_sync_attempted')
-  }
-
   return (
     <div className="min-h-[60vh] flex flex-col items-center justify-center text-center">
       <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
@@ -67,12 +46,7 @@ export function FirstTimeEmptyState() {
       <p className="text-sm text-beetle-muted font-body mt-3 max-w-xs">
         Click below to scan Reddit for threads matching your keywords.
       </p>
-      <button
-        onClick={handleFirstSync}
-        className="mt-6 bg-beetle-orange text-white font-body font-medium px-8 py-3 rounded-xl text-sm hover:opacity-90 transition-opacity"
-      >
-        Find my first Reddit threads →
-      </button>
+      <FirstSyncButton />
 
       {/* Hint cards */}
       <div className="mt-10 grid grid-cols-1 md:grid-cols-3 gap-4 max-w-2xl w-full">

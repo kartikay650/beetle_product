@@ -39,16 +39,20 @@ export async function POST(request: Request) {
   const jobId = job.id
 
   try {
-    const apifyRunId = await runApifyCrawl(
+    const apifyRunIds = await runApifyCrawl(
       workspace.keywords ?? [],
       workspace.subreddits ?? []
     )
+
+    // Store comma-separated run IDs (one per subreddit). The column is TEXT so
+    // this fits without a schema change; process route splits on ','.
+    const apifyRunIdsString = apifyRunIds.join(',')
 
     const { error: updateError } = await adminClient
       .from('crawl_jobs')
       .update({
         status: 'running',
-        apify_run_id: apifyRunId,
+        apify_run_id: apifyRunIdsString,
         started_at: new Date().toISOString(),
       })
       .eq('id', jobId)
@@ -56,7 +60,7 @@ export async function POST(request: Request) {
     if (updateError) {
       console.error('crawl_jobs update (running) failed:', updateError)
       return NextResponse.json(
-        { error: 'Apify run started but job status update failed', details: updateError.message, jobId, apifyRunId },
+        { error: 'Apify runs started but job status update failed', details: updateError.message, jobId, apifyRunIds },
         { status: 500 }
       )
     }
@@ -74,7 +78,7 @@ export async function POST(request: Request) {
       console.error('process fire-and-forget failed:', err)
     })
 
-    return NextResponse.json({ jobId, apifyRunId })
+    return NextResponse.json({ jobId, apifyRunIds })
   } catch (error) {
     console.error('Apify call failed:', error)
 

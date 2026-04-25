@@ -7,10 +7,21 @@ const ACTOR = 'harshmaur~reddit-scraper'
 // HARD LIMIT — never increase
 const MAX_RESULTS = 25
 
+// The actor only accepts ONE community via withinCommunity (format r/name).
+// For multi-subreddit coverage we fan out one run per subreddit and merge results.
+function normalizeSub(s: string): string {
+  return s.replace(/^r\//i, '').trim().toLowerCase()
+}
+
+function subMaxResults(totalSubs: number): number {
+  // Each sub can produce up to ceil(25 / N) items — final list is capped/deduped downstream.
+  return Math.max(5, Math.ceil(MAX_RESULTS / Math.max(1, totalSubs)))
+}
+
 export async function runApifyCrawl(
   keywords: string[],
   subreddits: string[]
-): Promise<string> {
+): Promise<string[]> {
   console.log('APIFY TOKEN EXISTS:', !!process.env.APIFY_API_TOKEN)
   console.log('APIFY TOKEN PREFIX:', process.env.APIFY_API_TOKEN?.substring(0, 15))
   console.log('KEYWORDS:', keywords)
@@ -27,104 +38,161 @@ export async function runApifyCrawl(
     throw new Error('No subreddits configured for this workspace')
   }
 
-  const normalizedSubs = subreddits.map((s) => s.replace(/^r\//i, '').trim()).filter(Boolean)
+  const normalizedSubs = subreddits.map(normalizeSub).filter(Boolean)
+  const perSub = subMaxResults(normalizedSubs.length)
+  console.log('PER-SUB MAX:', perSub, 'across', normalizedSubs.length, 'subs')
 
-  const input = {
-    searchTerms: keywords,
-    searchPosts: true,
-    searchComments: false,
-    searchCommunities: false,
-    withinCommunity: normalizedSubs.join(' OR r/'),
-    searchSort: 'relevance',
-    searchTime: 'week',
-    maxResults: MAX_RESULTS,
-  }
+  // Kick off one Apify run per subreddit in parallel. The actor rejects
+  // multi-community withinCommunity values, so we shard across runs.
+  const runIds = await Promise.all(
+    normalizedSubs.map(async (sub) => {
+      const input = {
+        searchTerms: keywords,
+        searchPosts: true,
+        searchComments: false,
+        searchCommunities: false,
+        withinCommunity: `r/${sub}`,
+        searchSort: 'relevance',
+        searchTime: 'week',
+        maxResults: perSub,
+      }
+      const endpoint = `${APIFY_BASE}/acts/${ACTOR}/runs?token=${token}`
+      console.log(`[${sub}] APIFY INPUT:`, input)
 
-  console.log('APIFY INPUT:', input)
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      })
 
-  const endpoint = `${APIFY_BASE}/acts/${ACTOR}/runs?token=${token}`
-  console.log('APIFY ENDPOINT:', endpoint.replace(token, 'REDACTED'))
+      console.log(`[${sub}] APIFY RESPONSE STATUS:`, response.status)
+      if (!response.ok) {
+        const text = await response.text()
+        console.error(`[${sub}] APIFY API ERROR BODY:`, text)
+        throw new Error(`Apify API ${response.status} for r/${sub}: ${text}`)
+      }
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
-  })
+      const json = (await response.json()) as { data?: { id?: string } }
+      const id = json.data?.id
+      if (!id) {
+        throw new Error(`Apify returned no run id for r/${sub}: ${JSON.stringify(json)}`)
+      }
+      console.log(`[${sub}] APIFY RUN STARTED:`, id)
+      return id
+    })
+  )
 
-  console.log('APIFY RESPONSE STATUS:', response.status)
-
-  if (!response.ok) {
-    const text = await response.text()
-    console.error('APIFY API ERROR BODY:', text)
-    throw new Error(`Apify API ${response.status}: ${text}`)
-  }
-
-  const json = (await response.json()) as { data?: { id?: string; status?: string } }
-  console.log('APIFY RUN RESPONSE:', json)
-
-  const run = json.data
-  if (!run?.id) {
-    throw new Error(`Apify returned unexpected payload: ${JSON.stringify(json)}`)
-  }
-
-  console.log('APIFY RUN STARTED:', run.id)
-  return run.id
+  console.log('ALL APIFY RUNS STARTED:', runIds)
+  return runIds
 }
 
 export interface ApifyRunStatus {
   status: 'READY' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'TIMED-OUT' | 'ABORTED' | string
   finishedAt: string | null
   defaultDatasetId: string | null
+  statusMessage?: string | null
 }
 
-export async function checkApifyRun(runId: string): Promise<ApifyRunStatus> {
-  const token = process.env.APIFY_API_TOKEN
-  if (!token) throw new Error('APIFY_API_TOKEN is not set')
+// Apify's /actor-runs endpoint occasionally returns 502/503 under load. Retry transparently
+// up to MAX_RETRIES with a 3s back-off so a transient gateway hiccup doesn't fail the whole job.
+const APIFY_MAX_RETRIES = 3
+const APIFY_RETRY_DELAY_MS = 3000
 
-  const response = await fetch(
-    `${APIFY_BASE}/actor-runs/${runId}?token=${token}`
-  )
+async function checkSingleRun(
+  runId: string,
+  token: string,
+  attempt = 0
+): Promise<ApifyRunStatus> {
+  const response = await fetch(`${APIFY_BASE}/actor-runs/${runId}?token=${token}`)
   if (!response.ok) {
+    if ((response.status === 502 || response.status === 503) && attempt < APIFY_MAX_RETRIES) {
+      console.warn(
+        `checkApifyRun ${response.status} for ${runId}, retrying in ${APIFY_RETRY_DELAY_MS}ms (attempt ${attempt + 1}/${APIFY_MAX_RETRIES})`
+      )
+      await new Promise((r) => setTimeout(r, APIFY_RETRY_DELAY_MS))
+      return checkSingleRun(runId, token, attempt + 1)
+    }
     const text = await response.text()
     throw new Error(`checkApifyRun ${response.status}: ${text}`)
   }
-
   const json = (await response.json()) as {
-    data?: { status?: string; finishedAt?: string; defaultDatasetId?: string }
+    data?: { status?: string; finishedAt?: string; defaultDatasetId?: string; statusMessage?: string }
   }
   const data = json.data ?? {}
-
   return {
     status: data.status ?? 'UNKNOWN',
     finishedAt: data.finishedAt ?? null,
     defaultDatasetId: data.defaultDatasetId ?? null,
+    statusMessage: data.statusMessage ?? null,
   }
 }
 
-export async function fetchApifyResults(runId: string): Promise<unknown[]> {
+// Aggregate status across N parallel runs. Overall is SUCCEEDED when every
+// run has reached a terminal state AND at least one SUCCEEDED. If all terminal
+// runs are FAILED/ABORTED/TIMED-OUT we report FAILED.
+export async function checkApifyRuns(runIds: string[]): Promise<{
+  overall: 'RUNNING' | 'SUCCEEDED' | 'FAILED'
+  perRun: Array<{ runId: string } & ApifyRunStatus>
+}> {
   const token = process.env.APIFY_API_TOKEN
   if (!token) throw new Error('APIFY_API_TOKEN is not set')
 
-  const runResp = await fetch(`${APIFY_BASE}/actor-runs/${runId}?token=${token}`)
-  if (!runResp.ok) {
-    throw new Error(`fetchApifyResults run fetch ${runResp.status}`)
-  }
-  const runJson = (await runResp.json()) as { data?: { defaultDatasetId?: string } }
-  const datasetId = runJson.data?.defaultDatasetId
-  if (!datasetId) {
-    throw new Error('Apify run has no defaultDatasetId')
-  }
-
-  const dsResp = await fetch(
-    `${APIFY_BASE}/datasets/${datasetId}/items?token=${token}&clean=true&limit=${MAX_RESULTS}`
+  const perRun = await Promise.all(
+    runIds.map(async (runId) => ({ runId, ...(await checkSingleRun(runId, token)) }))
   )
-  if (!dsResp.ok) {
-    throw new Error(`fetchApifyResults dataset fetch ${dsResp.status}`)
+
+  const terminal = perRun.every((r) =>
+    ['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT'].includes(r.status)
+  )
+  if (!terminal) return { overall: 'RUNNING', perRun }
+
+  const anySuccess = perRun.some((r) => r.status === 'SUCCEEDED')
+  return { overall: anySuccess ? 'SUCCEEDED' : 'FAILED', perRun }
+}
+
+export async function fetchApifyResults(runIds: string[]): Promise<unknown[]> {
+  const token = process.env.APIFY_API_TOKEN
+  if (!token) throw new Error('APIFY_API_TOKEN is not set')
+
+  // Sequential fetch with a decreasing budget so the total merged item count
+  // never exceeds MAX_RESULTS. If run 1 returns 18, runs 2-4 share the remaining 7.
+  // Once the budget hits zero we skip the remaining dataset fetches entirely.
+  const merged: unknown[] = []
+
+  for (const runId of runIds) {
+    const remaining = MAX_RESULTS - merged.length
+    if (remaining <= 0) {
+      console.log(`fetchApifyResults: budget exhausted, skipping run ${runId}`)
+      continue
+    }
+
+    const runResp = await fetch(`${APIFY_BASE}/actor-runs/${runId}?token=${token}`)
+    if (!runResp.ok) {
+      console.error(`fetchApifyResults run fetch ${runResp.status} for ${runId}`)
+      continue
+    }
+    const runJson = (await runResp.json()) as { data?: { defaultDatasetId?: string; status?: string } }
+    const datasetId = runJson.data?.defaultDatasetId
+    const status = runJson.data?.status
+    if (status !== 'SUCCEEDED' || !datasetId) {
+      console.log(`skipping ${runId}: status=${status}, datasetId=${datasetId}`)
+      continue
+    }
+
+    const dsResp = await fetch(
+      `${APIFY_BASE}/datasets/${datasetId}/items?token=${token}&clean=true&limit=${remaining}`
+    )
+    if (!dsResp.ok) {
+      console.error(`dataset fetch ${dsResp.status} for ${datasetId}`)
+      continue
+    }
+    const items = (await dsResp.json()) as unknown[]
+    console.log(`run ${runId}: fetched ${items.length} items (budget was ${remaining})`)
+    merged.push(...items)
   }
 
-  const items = (await dsResp.json()) as unknown[]
-  console.log('APIFY RESULT COUNT:', items.length)
-  return items
+  console.log('TOTAL MERGED ITEMS:', merged.length, '/ cap', MAX_RESULTS)
+  return merged
 }
 
 export interface ThreadRow {
@@ -133,31 +201,47 @@ export interface ThreadRow {
   title: string
   body: string | null
   subreddit: string
-  permalink: string
+  url: string
   author: string | null
-  score: number
-  num_comments: number
-  created_at: string
+  upvotes: number
+  comment_count: number
+  reddit_created_at: string
   status: 'new'
 }
 
+// Actor field names (confirmed from a live run of harshmaur/reddit-scraper):
+//   id: 't3_xxxx' (reddit fullname)       parsedId: 'xxxx' (bare id)
+//   title, body, bodyHtml
+//   authorName, authorId
+//   communityName: 'r/saas' · parsedCommunityName: 'saas'
+//   postUrl, contentUrl
+//   upVotes, commentsCount
+//   createdAt: ISO string
 type ApifyRedditItem = {
   id?: string
+  parsedId?: string
   postId?: string
   title?: string
   body?: string
   selftext?: string
   subreddit?: string
   community?: string
+  communityName?: string
+  parsedCommunityName?: string
   url?: string
+  postUrl?: string
+  contentUrl?: string
   permalink?: string
   author?: string
+  authorName?: string
   username?: string
   score?: number | string
+  upVotes?: number | string
   ups?: number | string
+  commentsCount?: number | string
   numComments?: number | string
   num_comments?: number | string
-  createdAt?: string
+  createdAt?: string | number
   created?: string | number
 }
 
@@ -166,19 +250,20 @@ export function mapApifyToThread(
   workspaceId: string
 ): ThreadRow | null {
   const raw = item as ApifyRedditItem
-  const redditId = raw.id ?? raw.postId
+  const redditId = raw.parsedId ?? raw.postId ?? raw.id
   const title = raw.title
   if (!redditId || !title) return null
 
-  const subreddit = String(raw.subreddit ?? raw.community ?? '')
-    .replace(/^r\//i, '')
-    .toLowerCase()
+  const subredditRaw =
+    raw.parsedCommunityName ?? raw.communityName ?? raw.subreddit ?? raw.community ?? ''
+  const subreddit = String(subredditRaw).replace(/^r\//i, '').toLowerCase()
 
-  const permalink = raw.permalink
-    ? (raw.permalink.startsWith('http')
-        ? raw.permalink
-        : `https://www.reddit.com${raw.permalink}`)
-    : (raw.url ?? '')
+  const urlRaw = raw.postUrl ?? raw.permalink ?? raw.url ?? ''
+  const url = urlRaw
+    ? urlRaw.startsWith('http')
+      ? urlRaw
+      : `https://www.reddit.com${urlRaw}`
+    : ''
 
   const createdAtIso = (() => {
     const v = raw.createdAt ?? raw.created
@@ -194,11 +279,11 @@ export function mapApifyToThread(
     title: String(title),
     body: raw.body ?? raw.selftext ?? null,
     subreddit,
-    permalink,
-    author: raw.author ?? raw.username ?? null,
-    score: Number(raw.score ?? raw.ups ?? 0),
-    num_comments: Number(raw.numComments ?? raw.num_comments ?? 0),
-    created_at: createdAtIso,
+    url,
+    author: raw.authorName ?? raw.author ?? raw.username ?? null,
+    upvotes: Number(raw.upVotes ?? raw.score ?? raw.ups ?? 0),
+    comment_count: Number(raw.commentsCount ?? raw.numComments ?? raw.num_comments ?? 0),
+    reddit_created_at: createdAtIso,
     status: 'new',
   }
 }
@@ -207,9 +292,20 @@ export async function storeThreads(
   workspaceId: string,
   items: unknown[]
 ): Promise<{ inserted: number }> {
-  const rows = items
+  // Dedupe by reddit_id, then sort by score desc, cap at MAX_RESULTS.
+  const mapped = items
     .map((item) => mapApifyToThread(item, workspaceId))
     .filter((r): r is ThreadRow => r !== null)
+
+  const uniq = new Map<string, ThreadRow>()
+  for (const row of mapped) {
+    const prev = uniq.get(row.reddit_id)
+    if (!prev || row.upvotes > prev.upvotes) uniq.set(row.reddit_id, row)
+  }
+
+  const rows = Array.from(uniq.values())
+    .sort((a, b) => b.upvotes - a.upvotes)
+    .slice(0, MAX_RESULTS)
 
   if (rows.length === 0) {
     console.log('storeThreads: no valid rows to insert')
@@ -218,7 +314,7 @@ export async function storeThreads(
 
   const { data, error } = await adminClient
     .from('threads')
-    .upsert(rows, { onConflict: 'workspace_id,reddit_id' })
+    .upsert(rows, { onConflict: 'reddit_id' })
     .select('id')
 
   if (error) {

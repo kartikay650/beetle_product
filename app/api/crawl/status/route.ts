@@ -21,29 +21,35 @@ export async function GET(request: NextRequest) {
 
   const jobId = request.nextUrl.searchParams.get('jobId')
 
+  // Always read fresh from DB — Supabase client doesn't cache, so each poll
+  // sees the latest threads_scored / status. No cache-control needed for the
+  // server side; freshness is guaranteed by the round-trip.
+  let job: Record<string, unknown> | null = null
+
   if (jobId) {
-    const { data: job } = await supabase
+    const { data } = await supabase
       .from('crawl_jobs')
       .select('*')
       .eq('id', jobId)
       .maybeSingle()
-
-    return NextResponse.json({
-      job,
-      last_synced_at: workspace.last_synced_at ?? null,
-    })
+    job = data ?? null
+  } else {
+    const { data: jobs } = await supabase
+      .from('crawl_jobs')
+      .select('*')
+      .eq('workspace_id', workspace.id)
+      .order('started_at', { ascending: false })
+      .limit(1)
+    job = jobs?.[0] ?? null
   }
 
-  // No jobId: return the most recent job for this workspace
-  const { data: jobs } = await supabase
-    .from('crawl_jobs')
-    .select('*')
-    .eq('workspace_id', workspace.id)
-    .order('started_at', { ascending: false })
-    .limit(1)
-
+  // Flat shape for the scan screen poller. `job` kept for any other consumers.
   return NextResponse.json({
-    job: jobs?.[0] ?? null,
+    status: (job?.status as string | null) ?? null,
+    threadsFound: (job?.threads_found as number | null) ?? 0,
+    threadsScored: (job?.threads_scored as number | null) ?? 0,
+    errorMessage: (job?.error_message as string | null) ?? null,
+    job,
     last_synced_at: workspace.last_synced_at ?? null,
   })
 }

@@ -2,29 +2,41 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import DashboardLayout from '@/components/layout/dashboard-layout'
 import { CaughtUpState, FirstTimeEmptyState } from '@/components/dashboard/empty-states'
+import ThreadViewer, { type ThreadForViewer } from '@/components/dashboard/thread-viewer'
 
-type Thread = {
+type ThreadRow = {
   id: string
   title: string
   subreddit: string
-  created_at: string
+  body: string | null
+  url: string
+  author: string | null
+  upvotes: number | null
+  comment_count: number | null
+  reddit_created_at: string
+  thread_scores:
+    | { relevance_score: number | null; summary: string | null; key_insight: string | null }[]
+    | null
+}
+
+const FRESHNESS_HOURS: Record<string, number> = {
+  '24h': 24,
+  '48h': 48,
+  '7d': 168,
 }
 
 export default async function DashboardPage() {
   const supabase = await createClient()
 
-  // 1. Session check
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // 2. Load profile
   const { data: profile } = await supabase
     .from('profiles')
     .select('onboarding_complete')
     .eq('id', user.id)
     .maybeSingle()
 
-  // 3. Handle missing profile — create it and send to onboarding
   if (!profile) {
     await supabase
       .from('profiles')
@@ -35,18 +47,14 @@ export default async function DashboardPage() {
     redirect('/onboarding')
   }
 
-  if (!profile.onboarding_complete) {
-    redirect('/onboarding')
-  }
+  if (!profile.onboarding_complete) redirect('/onboarding')
 
-  // 4. Load workspace
   const { data: workspace } = await supabase
     .from('workspaces')
     .select('*')
     .eq('user_id', user.id)
     .maybeSingle()
 
-  // Edge case: onboarding_complete but no workspace — reset
   if (!workspace) {
     await supabase
       .from('profiles')
@@ -55,16 +63,57 @@ export default async function DashboardPage() {
     redirect('/onboarding')
   }
 
-  // 5. Load threads
-  const { data: threads } = await supabase
+  // Freshness window. Defaults to 48h if column/value absent.
+  const freshnessKey = (workspace.freshness_filter as string | null | undefined) || '48h'
+  const freshnessHours = FRESHNESS_HOURS[freshnessKey] ?? 48
+  const freshnessDate = new Date(Date.now() - freshnessHours * 60 * 60 * 1000).toISOString()
+
+  // Reply-worthy bucket: fresh, low-competition, relevant or unscored.
+  // Relevance OR-NULL filter applied in JS after fetch (max ~25 rows, trivial).
+  const { data: rawThreads } = await supabase
     .from('threads')
-    .select('id, title, subreddit, created_at, thread_scores(relevance_score)')
+    .select(
+      'id, title, subreddit, body, url, author, upvotes, comment_count, reddit_created_at, thread_scores(relevance_score, summary, key_insight)'
+    )
     .eq('workspace_id', workspace.id)
     .eq('status', 'new')
-    .order('created_at', { ascending: false })
-    .limit(20)
+    .gte('reddit_created_at', freshnessDate)
+    .lt('comment_count', 50)
+    .limit(50)
 
-  const threadList = (threads || []) as Thread[]
+  const rows = (rawThreads ?? []) as ThreadRow[]
+
+  const threads: ThreadForViewer[] = rows
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      subreddit: r.subreddit,
+      body: r.body,
+      url: r.url,
+      author: r.author,
+      upvotes: r.upvotes ?? 0,
+      comment_count: r.comment_count ?? 0,
+      reddit_created_at: r.reddit_created_at,
+      score: r.thread_scores?.[0]
+        ? {
+            relevance_score: r.thread_scores[0].relevance_score,
+            summary: r.thread_scores[0].summary,
+          }
+        : null,
+    }))
+    // Relevance gate: score >= 6 OR unscored.
+    .filter((t) => {
+      const rel = t.score?.relevance_score
+      return rel == null || rel >= 6
+    })
+    // relevance_score DESC NULLS LAST, then upvotes DESC
+    .sort((a, b) => {
+      const ar = a.score?.relevance_score ?? -1
+      const br = b.score?.relevance_score ?? -1
+      if (ar !== br) return br - ar
+      return b.upvotes - a.upvotes
+    })
+    .slice(0, 20)
 
   return (
     <DashboardLayout
@@ -72,26 +121,8 @@ export default async function DashboardPage() {
       lastSyncedAt={workspace.last_synced_at}
       userEmail={user.email}
     >
-      {threadList.length > 0 ? (
-        <div>
-          <h2 className="font-display font-bold text-lg text-beetle-ink mb-4">
-            {threadList.length} threads ready
-          </h2>
-          {/* TODO Phase 2: replace with one-thread-at-a-time UI */}
-          <div>
-            {threadList.map((t) => (
-              <div
-                key={t.id}
-                className="bg-white border border-beetle-border rounded-xl p-4 mb-3"
-              >
-                <p className="text-sm font-body font-medium text-beetle-ink">{t.title}</p>
-                <p className="text-xs text-beetle-muted mt-1">
-                  r/{t.subreddit} · {new Date(t.created_at).toLocaleDateString()}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
+      {threads.length > 0 ? (
+        <ThreadViewer threads={threads} />
       ) : workspace.last_synced_at ? (
         <CaughtUpState lastSyncedAt={workspace.last_synced_at} />
       ) : (

@@ -3,9 +3,10 @@
 import { ReactNode, useMemo } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { Layers, Settings2, LogOut, RefreshCw, type LucideIcon } from 'lucide-react'
+import { Layers, Settings2, LogOut, type LucideIcon } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
+import SyncNowButton from '@/components/dashboard/sync-now-button'
 
 interface DashboardLayoutProps {
   children: ReactNode
@@ -121,9 +122,9 @@ export default function DashboardLayout({
         {/* Top bar */}
         <header className="h-14 border-b border-beetle-border bg-white flex items-center justify-between px-6 flex-shrink-0">
           <h1 className="font-display font-bold text-lg text-beetle-ink">{pageTitle}</h1>
-          <div className="text-xs text-beetle-muted font-body flex items-center gap-1.5">
-            <RefreshCw size={12} />
-            {syncedLabel}
+          <div className="flex items-center gap-3">
+            <div className="text-xs text-beetle-muted font-body">{syncedLabel}</div>
+            <SyncNowButton />
           </div>
         </header>
 
