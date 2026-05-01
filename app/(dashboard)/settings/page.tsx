@@ -16,6 +16,7 @@ export default async function SettingsPage() {
     .maybeSingle()
 
   const initialWorkspace = {
+    website_url: workspace?.website_url || '',
     product_name: workspace?.product_name || '',
     product_description: workspace?.product_description || '',
     icp_description: workspace?.icp_description || '',

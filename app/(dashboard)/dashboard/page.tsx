@@ -6,6 +6,7 @@ import ThreadViewer, { type ThreadForViewer } from '@/components/dashboard/threa
 
 type ThreadRow = {
   id: string
+  reddit_id: string
   title: string
   subreddit: string
   body: string | null
@@ -25,7 +26,34 @@ const FRESHNESS_HOURS: Record<string, number> = {
   '7d': 168,
 }
 
-export default async function DashboardPage() {
+const THREAD_SELECT =
+  'id, reddit_id, title, subreddit, body, url, author, upvotes, comment_count, reddit_created_at, thread_scores(relevance_score, summary, key_insight)'
+
+function toViewer(r: ThreadRow): ThreadForViewer {
+  return {
+    id: r.id,
+    title: r.title,
+    subreddit: r.subreddit,
+    body: r.body,
+    url: r.url,
+    author: r.author,
+    upvotes: r.upvotes ?? 0,
+    comment_count: r.comment_count ?? 0,
+    reddit_created_at: r.reddit_created_at,
+    score: r.thread_scores?.[0]
+      ? {
+          relevance_score: r.thread_scores[0].relevance_score,
+          summary: r.thread_scores[0].summary,
+        }
+      : null,
+  }
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams?: { threadId?: string }
+}) {
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
@@ -69,51 +97,57 @@ export default async function DashboardPage() {
   const freshnessDate = new Date(Date.now() - freshnessHours * 60 * 60 * 1000).toISOString()
 
   // Reply-worthy bucket: fresh, low-competition, relevant or unscored.
-  // Relevance OR-NULL filter applied in JS after fetch (max ~25 rows, trivial).
   const { data: rawThreads } = await supabase
     .from('threads')
-    .select(
-      'id, title, subreddit, body, url, author, upvotes, comment_count, reddit_created_at, thread_scores(relevance_score, summary, key_insight)'
-    )
+    .select(THREAD_SELECT)
     .eq('workspace_id', workspace.id)
     .eq('status', 'new')
     .gte('reddit_created_at', freshnessDate)
     .lt('comment_count', 50)
     .limit(50)
 
-  const rows = (rawThreads ?? []) as ThreadRow[]
+  const allRows = (rawThreads ?? []) as ThreadRow[]
 
-  const threads: ThreadForViewer[] = rows
-    .map((r) => ({
-      id: r.id,
-      title: r.title,
-      subreddit: r.subreddit,
-      body: r.body,
-      url: r.url,
-      author: r.author,
-      upvotes: r.upvotes ?? 0,
-      comment_count: r.comment_count ?? 0,
-      reddit_created_at: r.reddit_created_at,
-      score: r.thread_scores?.[0]
-        ? {
-            relevance_score: r.thread_scores[0].relevance_score,
-            summary: r.thread_scores[0].summary,
-          }
-        : null,
-    }))
-    // Relevance gate: score >= 6 OR unscored.
+  // Pinned thread support — when ?threadId=<reddit_id> is in the URL (e.g. from
+  // a Search result click) we surface that thread first, even if it would have
+  // been filtered out by freshness/comment_count/relevance.
+  const threadIdParam = searchParams?.threadId?.trim()
+  let pinnedRow: ThreadRow | null = null
+  let listRows = allRows
+
+  if (threadIdParam) {
+    const inListIdx = allRows.findIndex((r) => r.reddit_id === threadIdParam)
+    if (inListIdx >= 0) {
+      pinnedRow = allRows[inListIdx]
+      listRows = allRows.filter((_, i) => i !== inListIdx)
+    } else {
+      const { data: extra } = await supabase
+        .from('threads')
+        .select(THREAD_SELECT)
+        .eq('workspace_id', workspace.id)
+        .eq('reddit_id', threadIdParam)
+        .maybeSingle()
+      if (extra) pinnedRow = extra as ThreadRow
+    }
+  }
+
+  // Apply relevance gate + sort to non-pinned rows. Pinned thread bypasses these.
+  const filtered: ThreadForViewer[] = listRows
+    .map(toViewer)
     .filter((t) => {
       const rel = t.score?.relevance_score
       return rel == null || rel >= 6
     })
-    // relevance_score DESC NULLS LAST, then upvotes DESC
     .sort((a, b) => {
       const ar = a.score?.relevance_score ?? -1
       const br = b.score?.relevance_score ?? -1
       if (ar !== br) return br - ar
       return b.upvotes - a.upvotes
     })
-    .slice(0, 20)
+
+  const threads: ThreadForViewer[] = pinnedRow
+    ? [toViewer(pinnedRow), ...filtered].slice(0, 20)
+    : filtered.slice(0, 20)
 
   return (
     <DashboardLayout

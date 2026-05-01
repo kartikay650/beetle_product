@@ -1,9 +1,11 @@
 // Claude Haiku reply generation. ONE batched call → 3 variants.
 // System prompt is the long-form skill at lib/prompts/reddit-reply-skill.md +
-// per-workspace product context appended at the end.
+// per-workspace product context appended at the end. Each variant runs through
+// the shared humanizer to strip AI tells before returning.
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import Anthropic from '@anthropic-ai/sdk'
+import { humanizeText } from '@/lib/humanizer'
 
 export type ReplyVariant = {
   variant: 1 | 2 | 3
@@ -133,7 +135,7 @@ Competitors: ${workspace.competitors.join(', ') || 'none specified'}`
       return FALLBACK
     }
     variants.sort((a, b) => a.variant - b.variant)
-    return variants
+    return variants.map((v) => ({ ...v, content: humanizeText(v.content) }))
   } catch (err) {
     console.error('generateReplies: Claude call failed:', err)
     return FALLBACK

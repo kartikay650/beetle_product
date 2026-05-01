@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { Loader2 } from 'lucide-react'
 import TagInput from '@/components/ui/tag-input'
 import { toast } from '@/components/ui/use-toast'
 import { track } from '@/lib/analytics'
@@ -9,6 +10,7 @@ import { createClient } from '@/lib/supabase/client'
 import { saveWorkspace } from '@/app/(dashboard)/settings/actions'
 
 interface WorkspaceData {
+  website_url: string
   product_name: string
   product_description: string
   icp_description: string
@@ -38,6 +40,8 @@ export default function SettingsForm({ userId, userEmail, initialWorkspace }: Se
 
   const [data, setData] = useState<WorkspaceData>(initialWorkspace)
   const [saving, setSaving] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [analyzeError, setAnalyzeError] = useState('')
 
   // Account section state
   const [newEmail, setNewEmail] = useState('')
@@ -47,6 +51,56 @@ export default function SettingsForm({ userId, userEmail, initialWorkspace }: Se
 
   function updateField<K extends keyof WorkspaceData>(field: K, value: WorkspaceData[K]) {
     setData((prev) => ({ ...prev, [field]: value }))
+  }
+
+  async function handleAnalyze() {
+    const url = data.website_url.trim()
+    if (!url) {
+      setAnalyzeError('Enter a URL first')
+      return
+    }
+    setAnalyzeError('')
+    setAnalyzing(true)
+    try {
+      const res = await fetch('/api/analyze-website', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body?.error || 'Could not analyze website')
+      }
+      const json = (await res.json()) as { analysis: {
+        product_name?: string
+        product_description?: string
+        icp_description?: string
+        tone_guide?: string
+        suggested_keywords?: string[]
+        suggested_competitors?: string[]
+        suggested_subreddits?: string[]
+      } }
+      const a = json.analysis ?? {}
+      setData((prev) => ({
+        ...prev,
+        product_name: a.product_name?.trim() || prev.product_name,
+        product_description: (a.product_description ?? '').slice(0, 500) || prev.product_description,
+        icp_description: (a.icp_description ?? '').slice(0, 500) || prev.icp_description,
+        tone_guide: (a.tone_guide ?? '').slice(0, 300) || prev.tone_guide,
+        keywords: a.suggested_keywords?.length ? a.suggested_keywords : prev.keywords,
+        competitors: a.suggested_competitors?.length ? a.suggested_competitors : prev.competitors,
+        subreddits: a.suggested_subreddits?.length ? a.suggested_subreddits : prev.subreddits,
+      }))
+      track('settings_website_analyzed')
+      toast({
+        title: 'Website analyzed',
+        description: 'Review the changes below and click Save to keep them.',
+      })
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : 'Analyze failed')
+    } finally {
+      setAnalyzing(false)
+    }
   }
 
   async function handleSave() {
@@ -125,6 +179,34 @@ export default function SettingsForm({ userId, userEmail, initialWorkspace }: Se
 
         <div className="space-y-5">
           <div>
+            <label className="block font-body text-sm text-beetle-ink font-medium mb-1.5">Website</label>
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={data.website_url}
+                onChange={(e) => updateField('website_url', e.target.value)}
+                placeholder="https://yourproduct.com"
+                className="flex-1 rounded-lg border border-beetle-border bg-white px-3 py-2.5 text-sm text-beetle-ink font-body placeholder:text-beetle-faint focus:outline-none focus:ring-2 focus:ring-beetle-orange focus:border-transparent"
+              />
+              <button
+                type="button"
+                onClick={handleAnalyze}
+                disabled={analyzing || !data.website_url.trim()}
+                className="border border-beetle-orange text-beetle-orange font-body font-medium px-4 py-2 rounded-lg text-sm hover:bg-beetle-orange hover:text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+              >
+                {analyzing ? <Loader2 size={14} className="animate-spin" /> : null}
+                {analyzing ? 'Analyzing…' : 'Re-analyze'}
+              </button>
+            </div>
+            {analyzeError && (
+              <p className="text-red-600 text-sm font-body mt-2">{analyzeError}</p>
+            )}
+            <p className="text-xs text-beetle-faint font-body mt-1.5">
+              Re-analyze pre-fills the fields below. Review and click Save to keep them.
+            </p>
+          </div>
+
+          <div>
             <label className="block font-body text-sm text-beetle-ink mb-1.5">Product name</label>
             <input
               type="text"
@@ -139,11 +221,11 @@ export default function SettingsForm({ userId, userEmail, initialWorkspace }: Se
             <textarea
               value={data.product_description}
               onChange={(e) => updateField('product_description', e.target.value)}
-              maxLength={200}
-              rows={3}
+              maxLength={500}
+              rows={4}
               className="w-full rounded-lg border border-beetle-border bg-white px-3 py-2.5 text-sm text-beetle-ink font-body placeholder:text-beetle-faint focus:outline-none focus:ring-2 focus:ring-beetle-orange focus:border-transparent resize-none"
             />
-            <CharCount current={data.product_description.length} max={200} />
+            <CharCount current={data.product_description.length} max={500} />
           </div>
 
           <div>
@@ -151,11 +233,11 @@ export default function SettingsForm({ userId, userEmail, initialWorkspace }: Se
             <textarea
               value={data.icp_description}
               onChange={(e) => updateField('icp_description', e.target.value)}
-              maxLength={200}
-              rows={3}
+              maxLength={500}
+              rows={5}
               className="w-full rounded-lg border border-beetle-border bg-white px-3 py-2.5 text-sm text-beetle-ink font-body placeholder:text-beetle-faint focus:outline-none focus:ring-2 focus:ring-beetle-orange focus:border-transparent resize-none"
             />
-            <CharCount current={data.icp_description.length} max={200} />
+            <CharCount current={data.icp_description.length} max={500} />
           </div>
 
           <div>
@@ -163,11 +245,11 @@ export default function SettingsForm({ userId, userEmail, initialWorkspace }: Se
             <textarea
               value={data.tone_guide}
               onChange={(e) => updateField('tone_guide', e.target.value)}
-              maxLength={150}
-              rows={3}
+              maxLength={300}
+              rows={4}
               className="w-full rounded-lg border border-beetle-border bg-white px-3 py-2.5 text-sm text-beetle-ink font-body placeholder:text-beetle-faint focus:outline-none focus:ring-2 focus:ring-beetle-orange focus:border-transparent resize-none"
             />
-            <CharCount current={data.tone_guide.length} max={150} />
+            <CharCount current={data.tone_guide.length} max={300} />
           </div>
 
           <div>

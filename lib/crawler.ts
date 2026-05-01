@@ -325,3 +325,91 @@ export async function storeThreads(
   console.log('storeThreads inserted:', data?.length ?? 0)
   return { inserted: data?.length ?? 0 }
 }
+
+// On-demand search. Used by /api/search to fan out a single user prompt to Apify.
+// Synchronous from the caller's perspective: starts run(s), polls until terminal,
+// returns raw items. Up to 3 runs (one per subreddit) if subreddits are provided;
+// otherwise a single Reddit-wide run with no withinCommunity filter.
+const SEARCH_PER_RUN = 15
+const SEARCH_MAX_SUBS = 3
+const SEARCH_POLL_MS = 3000
+const SEARCH_MAX_SECONDS = 50
+
+export async function searchReddit(
+  query: string,
+  subreddits?: string[]
+): Promise<unknown[]> {
+  const token = process.env.APIFY_API_TOKEN
+  if (!token) throw new Error('APIFY_API_TOKEN is not set in environment')
+
+  const trimmedQuery = query.trim()
+  if (!trimmedQuery) throw new Error('query is required')
+
+  const subs = (subreddits ?? [])
+    .map(normalizeSub)
+    .filter(Boolean)
+    .slice(0, SEARCH_MAX_SUBS)
+
+  const targets =
+    subs.length > 0
+      ? subs.map((s) => ({ withinCommunity: `r/${s}`, label: s }))
+      : [{ withinCommunity: '', label: 'all-of-reddit' }]
+
+  console.log(`SEARCH: query="${trimmedQuery}" targets=${targets.length}`)
+
+  // Start runs in parallel
+  const runIds = await Promise.all(
+    targets.map(async ({ withinCommunity, label }) => {
+      const input: Record<string, unknown> = {
+        searchTerms: [trimmedQuery],
+        searchPosts: true,
+        searchComments: false,
+        searchCommunities: false,
+        searchSort: 'relevance',
+        searchTime: 'month',
+        maxResults: SEARCH_PER_RUN,
+      }
+      if (withinCommunity) input.withinCommunity = withinCommunity
+
+      const r = await fetch(`${APIFY_BASE}/acts/${ACTOR}/runs?token=${token}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      })
+      if (!r.ok) {
+        const text = await r.text()
+        console.error(`SEARCH start [${label}] failed:`, r.status, text)
+        throw new Error(`Search Apify ${r.status} for ${label}: ${text}`)
+      }
+      const j = (await r.json()) as { data?: { id?: string } }
+      const id = j.data?.id
+      if (!id) throw new Error(`Search returned no run id for ${label}`)
+      console.log(`SEARCH run started [${label}]: ${id}`)
+      return id
+    })
+  )
+
+  // Poll until all reach a terminal state (50s cap leaves headroom inside route's 60s budget).
+  const start = Date.now()
+  let aggregate = await checkApifyRuns(runIds)
+  while (
+    aggregate.overall === 'RUNNING' &&
+    (Date.now() - start) / 1000 < SEARCH_MAX_SECONDS
+  ) {
+    await new Promise((r) => setTimeout(r, SEARCH_POLL_MS))
+    aggregate = await checkApifyRuns(runIds)
+  }
+
+  if (aggregate.overall === 'FAILED') {
+    const msg = aggregate.perRun
+      .map((r) => `${r.runId}=${r.status}${r.statusMessage ? ` (${r.statusMessage})` : ''}`)
+      .join('; ')
+    throw new Error(`All search runs failed: ${msg}`)
+  }
+
+  // Reuse the existing fetcher (sequential, capped at MAX_RESULTS=25 total).
+  // Final 15-cap is applied by the route after dedupe.
+  const items = await fetchApifyResults(runIds)
+  console.log(`SEARCH fetched ${items.length} items across ${runIds.length} runs`)
+  return items
+}

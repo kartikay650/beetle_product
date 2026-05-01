@@ -3,7 +3,7 @@
 import { ReactNode, useMemo } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { Layers, Settings2, LogOut, type LucideIcon } from 'lucide-react'
+import { Layers, Settings2, LogOut, Search, PenSquare, type LucideIcon } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
 import SyncNowButton from '@/components/dashboard/sync-now-button'
@@ -73,6 +73,8 @@ export default function DashboardLayout({
 
   const avatarLetter = (userEmail || '?').charAt(0).toUpperCase()
   const isThreads = pathname === '/dashboard'
+  const isSearch = pathname === '/search'
+  const isCreatePost = pathname === '/create-post'
   const isSettings = pathname === '/settings'
 
   async function handleSignOut() {
@@ -94,6 +96,8 @@ export default function DashboardLayout({
         {/* Nav */}
         <nav className="flex-1 px-3 py-2 space-y-1">
           <NavItem href="/dashboard" icon={Layers} label="Threads" active={isThreads} />
+          <NavItem href="/search" icon={Search} label="Search" active={isSearch} />
+          <NavItem href="/create-post" icon={PenSquare} label="Create Post" active={isCreatePost} />
           <NavItem href="/settings" icon={Settings2} label="Settings" active={isSettings} />
         </nav>
 
@@ -145,6 +149,26 @@ export default function DashboardLayout({
         >
           <Layers size={20} />
           <span className="text-[10px] font-body">Threads</span>
+        </Link>
+        <Link
+          href="/search"
+          className={cn(
+            'flex flex-col items-center gap-0.5',
+            isSearch ? 'text-beetle-orange' : 'text-beetle-muted'
+          )}
+        >
+          <Search size={20} />
+          <span className="text-[10px] font-body">Search</span>
+        </Link>
+        <Link
+          href="/create-post"
+          className={cn(
+            'flex flex-col items-center gap-0.5',
+            isCreatePost ? 'text-beetle-orange' : 'text-beetle-muted'
+          )}
+        >
+          <PenSquare size={20} />
+          <span className="text-[10px] font-body">Post</span>
         </Link>
         <Link
           href="/settings"

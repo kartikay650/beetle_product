@@ -8,6 +8,7 @@ export type WorkspaceData = {
   keywords: string[]
   subreddits: string[]
   competitors: string[]
+  website_url?: string
   last_synced_at?: string | null
 }
 
